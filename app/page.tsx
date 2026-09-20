@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { useVoiceRecorder } from '@/lib/useVoiceRecorder'
 import {
   ArrowLeftRight, BookOpen, Check, ChevronRight, CircleHelp, CloudOff, Download, FileText,
   FolderOpen, Headphones, Home, LockKeyhole, Menu, Mic, MoreHorizontal, Play, RotateCcw,
@@ -17,7 +18,7 @@ const tabs = [
 function StatusStrip() { return <div className="status-strip"><span className="status-dot" /> क्लाउड अनुवाद सक्रिय <span className="status-note">(डेमो चरण)</span><span className="status-right">◷ 09:42</span></div> }
 function Header({ title, onSettings }: { title: string, onSettings: () => void }) { return <header className="app-header"><div className="brand-mark">से</div><div className="brand-copy"><strong>SETU <span>सेतु</span></strong><small>{title}</small></div><div className="pair-chip">हिन्दी <ArrowLeftRight size={13} /> संथाली</div><button className="avatar" onClick={onSettings} aria-label="सेटिंग्स खोलें">अशि</button></header> }
 function SectionTitle({ children, action }: { children: React.ReactNode, action?: string }) { return <div className="section-title"><h2>{children}</h2>{action && <button className="text-action">{action} <ChevronRight size={15} /></button>}</div> }
-function MicButton({ small = false }: { small?: boolean }) { return <button className={`mic-button ${small ? 'small' : ''}`} aria-label="माइक दबाकर बोलें"><Mic size={small ? 22 : 30} /></button> }
+function MicButton({ small = false, active = false, onClick }: { small?: boolean, active?: boolean, onClick?: () => void }) { return <button className={`mic-button ${small ? 'small' : ''} ${active ? 'recording' : ''}`} aria-label="माइक दबाकर बोलें" onClick={onClick}><Mic size={small ? 22 : 30} /></button> }
 
 function HomeScreen({ go }: { go: (s: string) => void }) {
   return <><div className="language-switch"><button className="active">संथाली</button><button>हिन्दी</button><ArrowLeftRight size={22} /></div>
@@ -27,7 +28,58 @@ function HomeScreen({ go }: { go: (s: string) => void }) {
     <div className="success-banner"><Check size={20} /><div><strong>संथाली भाषा पैक तैयार</strong><span>आप बिना इंटरनेट भी पाठ चला सकते हैं</span></div></div><div className="footer-cards"><div><Sparkles size={18} /><strong>भाषा सेतु पैक</strong><small>१२४ वाक्य उपलब्ध</small></div><div><Headphones size={18} /><strong>दैनिक बालगीत</strong><small>आज का गीत सुनें</small></div></div></>
 }
 function MediaCard({ kind, title, icon }: { kind: string, title: string, icon: string }) { return <div className="media-card"><div className="media-thumb">{icon}</div><div><span>{kind}</span><strong>{title}</strong></div><button aria-label="चलाएं"><Play size={16} fill="currentColor" /></button></div> }
-function TranslatorScreen() { return <><div className="mode-toggle"><button className="active">दबाकर बोलें</button><button>लगातार सुनें</button></div><div className="context-label">कक्षा ३ <span>•</span> FLN वाचन <span className="live-pill">Bhashini demo</span></div><div className="speech-card"><span className="bubble-label">आपने कहा • हिन्दी</span><p>“बच्चों, किताब खोलो और पहला पन्ना पढ़ो।”</p><button><Volume2 size={17} /></button></div><div className="translation-card"><div className="translation-head"><span className="bubble-label">संथाली अनुवाद</span><span className="verified"><ShieldCheck size={14} /> सत्यापित</span></div><p className="olchiki">ᱵᱟᱹᱲᱤ ᱠᱚ, ᱯᱟᱹᱛᱤ ᱠᱷᱚᱞ ᱢᱮ</p><div className="word-chips"><span>ᱵᱟᱹᱲᱤ <small>children</small> <Volume2 size={12} /></span><span>ᱯᱟᱹᱛᱤ <small>book</small> <Volume2 size={12} /></span><span>ᱠᱷᱚᱞ <small>open</small> <Volume2 size={12} /></span></div></div><div className="listen-area"><MicButton /><strong>माइक दबाकर बोलें</strong><span>बोलते ही संथाली में अनुवाद सुनाया जाएगा</span></div><div className="replay-bar"><RotateCcw size={17} /> पिछला वाक्य दोहराएं <Volume2 size={17} /></div><div className="quick-actions"><button><Volume2 size={18} /> शांत रहें</button><button><Sparkles size={18} /> शाबाश!</button></div><div className="inline-warning"><WifiOff size={16} /> इंटरनेट उपलब्ध नहीं — बाद में पुनः प्रयास करें</div></> }
+type TranslatorState = 'idle' | 'recording' | 'processing' | 'done' | 'error'
+
+function TranslatorScreen() {
+  const { isRecording, start, stop } = useVoiceRecorder()
+  const [state, setState] = useState<TranslatorState>('idle')
+  const [transcript, setTranscript] = useState('')
+  const [translation, setTranslation] = useState('')
+  const [errorMsg, setErrorMsg] = useState('')
+  const lastAudioRef = useRef<HTMLAudioElement | null>(null)
+
+  const playBase64Wav = (audioBase64: string) => {
+    const audio = new Audio(`data:audio/wav;base64,${audioBase64}`)
+    lastAudioRef.current = audio
+    audio.play().catch(() => { /* autoplay can be blocked; the replay button covers this */ })
+  }
+
+  const handleMicPress = async () => {
+    if (state === 'recording') {
+      setState('processing')
+      const audioBase64 = await stop()
+      try {
+        const res = await fetch('/api/translate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ audioBase64, sourceLanguage: 'hi', targetLanguage: 'sat' }),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || 'अनुवाद विफल')
+        setTranscript(data.transcript || '')
+        setTranslation(data.translation || '')
+        if (data.ttsAudioBase64) playBase64Wav(data.ttsAudioBase64)
+        setState('done')
+      } catch (err: any) {
+        setErrorMsg(err.message || 'कुछ गलत हो गया')
+        setState('error')
+      }
+      return
+    }
+    setErrorMsg('')
+    setState('recording')
+    await start()
+  }
+
+  const statusText: Record<TranslatorState, string> = {
+    idle: 'बोलते ही संथाली में अनुवाद सुनाया जाएगा',
+    recording: 'सुन रहा हूँ... रोकने के लिए फिर दबाएं',
+    processing: 'अनुवाद हो रहा है...',
+    done: 'तैयार — दोबारा सुनने के लिए नीचे दबाएं',
+    error: errorMsg,
+  }
+
+  return <><div className="mode-toggle"><button className="active">दबाकर बोलें</button><button>लगातार सुनें</button></div><div className="context-label">कक्षा ३ <span>•</span> FLN वाचन <span className="live-pill">{state === 'processing' ? 'Bhashini से जुड़ रहे हैं...' : 'Bhashini लाइव'}</span></div><div className="speech-card"><span className="bubble-label"> आपने कहा • हिन्दी</span><p>{transcript || 'माइक दबाकर हिन्दी में बोलें'}</p><button><Volume2 size={17} /></button></div><div className="translation-card"><div className="translation-head"><span className="bubble-label">संथाली अनुवाद</span><span className="verified"><ShieldCheck size={14} /> Bhashini</span></div><p className="olchiki">{translation || 'ᱟᱢᱟᱜ ᱵᱚᱞ ᱱᱚᱶᱰᱮ ᱦᱩᱭ ᱟᱭ'}</p></div><div className="listen-area"><MicButton active={isRecording} onClick={handleMicPress} /><strong>{isRecording ? 'रोकने के लिए दबाएं' : 'माइक दबाकर बोलें'}</strong><span>{statusText[state]}</span></div><div className="replay-bar" onClick={() => lastAudioRef.current?.play()}><RotateCcw size={17} /> पिछला वाक्य दोहराएं <Volume2 size={17} /></div><div className="quick-actions"><button><Volume2 size={18} /> शांत रहें</button><button><Sparkles size={18} /> शाबाश!</button></div>{state === 'error' && <div className="inline-warning"><WifiOff size={16} /> {errorMsg}</div>}</> }
 function CurriculumScreen({ go }: { go: (s: string) => void }) { const rows = [['१','बच्चों, किताब खोलो।','ᱵᱟᱹᱲᱤ ᱠᱚ, ᱯᱟᱹᱛᱤ ᱠᱷᱚᱞ ᱢᱮ','किताब'],['२','पहला पन्ना पढ़ो।','ᱯᱟᱹᱛᱤ ᱨᱮᱭᱟᱜ ᱢᱤᱫ ᱯᱟᱱᱟ ᱯᱟᱲᱦᱟᱣ ᱢᱮ','पन्ना'],['३','चित्र को ध्यान से देखो।','ᱪᱤᱛᱟᱹᱨ ᱠᱚ ᱧᱮᱞ ᱢᱮ','चित्र']]; return <><div className="lesson-heading"><span className="tag">भाषा • कक्षा ३</span><button><ArrowLeftRight size={18} /></button><h1>हमारा सुंदर गाँव</h1><p>गाँव की चीज़ों को पहचानना और उनके नाम सीखना।</p></div><div className="sentence-list">{rows.map(r => <div className="sentence-card" key={r[0]}><b>{r[0]}</b><div><strong>{r[1]}</strong><p className="olchiki">{r[2]}</p><span className="key-chip">मुख्य शब्द: {r[3]}</span></div><button className="play-btn"><Volume2 size={18} /> सुनें</button></div>)}</div><div className="activity-card"><div className="folk-art"><span>◒</span><span>⌁</span><span>◓</span></div><div><span className="eyebrow">कक्षा गतिविधि</span><p>बच्चों से अपने गाँव का चित्र बनवाएँ।</p></div></div><div className="sticky-controls"><button className="primary-btn"><Play size={16} fill="currentColor" /> पूरा पाठ सुनाएं</button><button className="secondary-btn" onClick={() => go('worksheets')}>कार्यपत्रक देखें</button></div></> }
 function StorageScreen() { return <><div className="cloud-banner"><CloudOff size={23} /><div><strong>बिना इंटरनेट के पूरा उपयोग</strong><span>डाउनलोड किए पाठ आपके टैबलेट में सुरक्षित हैं</span></div></div><div className="device-card"><div><span className="eyebrow">टैबलेट स्थिति</span><h3>सब कुछ ठीक है</h3></div><span className="ready-pill"><Check size={14} /> तैयार</span></div><SectionTitle>ऑफ़लाइन पाठ सामग्री</SectionTitle><div className="download-list">{[['संथाली भाषा पैक','१२४ वाक्य और शब्दावली','तैयार (सक्रिय)'],['कक्षा ३ • भाषा','८ पाठ और गतिविधियाँ','तैयार'],['दैनिक बालगीत','२८ ऑडियो गीत','तैयार']].map((x,i) => <div className="download-row" key={x[0]}><div className="list-icon">{i===0?<Waves size={18}/>:i===1?<BookOpen size={18}/>:<Headphones size={18}/>}</div><div><strong>{x[0]}</strong><small>{x[1]}</small></div><span className="ready-pill">{x[2]}</span></div>)}</div><div className="sync-card"><span className="eyebrow">नया पाठ अपडेट करें</span><p>पिछला सिंक: आज, 08:15 बजे</p><button className="primary-btn"><Download size={17} /> पाठ व भाषा सामग्री सिंक करें</button><small>स्कूल में इंटरनेट मिलने पर दबाएं</small></div><div className="footer-links"><button>मेमोरी खाली करें</button><button>उन्नत सेटिंग्स</button></div></> }
 function WorksheetsScreen() { return <><div className="selector-row"><div><span>कक्षा और इकाई</span><strong>कक्षा ३ • इकाई १</strong></div><button>बदलें <ChevronRight size={15} /></button></div><div className="work-tabs"><button className="active">सचित्र फ़्लैशकार्ड</button><button>प्रिंट कार्यपत्रक</button></div><div className="flashcard"><div className="flash-art"><div className="art-sun" /><div className="art-hill" /><div className="art-house">⌂</div><span className="card-count">कार्ड ०३ / १२</span><span className="level-tag">कक्षा ३</span></div><div className="flash-content"><span className="eyebrow">हिन्दी शब्द</span><h1>गाँव</h1><div className="olive-chip">ᱦᱟᱛᱩ <Volume2 size={17} /></div><p>“मेरा गाँव बहुत सुंदर है।”</p><p className="olchiki">“ᱤᱧᱟᱹᱜ ᱦᱟᱛᱩ ᱵᱟᱹᱲᱤ ᱥᱩᱱᱫᱟᱹᱨ ᱜᱮᱭᱟ।”</p></div></div><button className="next-card">अगला कार्ड <ChevronRight size={18} /></button></> }
