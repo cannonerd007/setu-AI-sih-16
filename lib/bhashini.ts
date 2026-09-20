@@ -27,7 +27,6 @@ const DEFAULT_PIPELINE_ID = "64392f96daac500b55c543cd"
 type PipelineConfig = {
   asrServiceId: string
   nmtServiceId: string
-  ttsServiceId: string
   inferenceApiKey: { name: string; value: string }
 }
 
@@ -61,13 +60,16 @@ async function getPipelineConfig(
       ulcaApiKey: apiKey,
     },
     body: JSON.stringify({
+      // TTS deliberately omitted: this account has no Santali TTS service
+      // registered (getModelsPipeline returns 400 "No supported tasks
+      // found" for tts+sat, confirmed empirically) — asking for it here
+      // fails the whole pipeline-config call, not just the tts stage.
       pipelineTasks: [
         { taskType: "asr", config: { language: { sourceLanguage } } },
         {
           taskType: "translation",
           config: { language: { sourceLanguage, targetLanguage } },
         },
-        { taskType: "tts", config: { language: { sourceLanguage: targetLanguage } } },
       ],
       pipelineRequestConfig: { pipelineId },
     }),
@@ -98,7 +100,6 @@ async function getPipelineConfig(
   const config: PipelineConfig = {
     asrServiceId: findServiceId("asr"),
     nmtServiceId: findServiceId("translation"),
-    ttsServiceId: findServiceId("tts"),
     inferenceApiKey: data.pipelineInferenceAPIEndPoint?.inferenceApiKey,
   }
 
@@ -151,15 +152,6 @@ export async function voiceToVoice({
             serviceId: config.nmtServiceId,
           },
         },
-        {
-          taskType: "tts",
-          config: {
-            language: { sourceLanguage: targetLanguage },
-            serviceId: config.ttsServiceId,
-            gender: "female",
-            samplingRate: 22050,
-          },
-        },
       ],
       inputData: { audio: [{ audioContent: audioBase64 }] },
     }),
@@ -176,10 +168,8 @@ export async function voiceToVoice({
   const transcript = stages.find((s) => s.taskType === "asr")?.output?.[0]?.source ?? ""
   const translation =
     stages.find((s) => s.taskType === "translation")?.output?.[0]?.target ?? ""
-  const ttsAudioBase64 =
-    stages.find((s) => s.taskType === "tts")?.audio?.[0]?.audioContent ?? ""
 
-  if (!transcript && !translation && !ttsAudioBase64) {
+  if (!transcript && !translation) {
     throw new Error(
       `Bhashini returned an empty pipeline response — check the raw shape: ${JSON.stringify(
         data
@@ -187,5 +177,6 @@ export async function voiceToVoice({
     )
   }
 
-  return { transcript, translation, ttsAudioBase64 }
+  // No Santali TTS on this account — text-only result, no audio synthesized.
+  return { transcript, translation }
 }
